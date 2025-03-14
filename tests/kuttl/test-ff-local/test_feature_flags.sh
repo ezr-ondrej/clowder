@@ -1,9 +1,11 @@
 #!/bin/bash
 
+INGRESS_HOST=$(kubectl -n test-ff-local get ingress test-ff-local-featureflags -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
 FEATURE_FLAGS_POD=$(kubectl -n test-ff-local get pod -l env-app=test-ff-local-featureflags -l service=featureflags --output=jsonpath={.items..metadata.name})
 ADMIN_TOKEN=$(kubectl -n test-ff-local get secret test-ff-local-featureflags  -o json | jq -r '.data.adminAccessToken | @base64d')
 CLIENT_TOKEN=$(kubectl -n test-ff-local get secret test-ff-local-featureflags  -o json | jq -r '.data.clientAccessToken | @base64d')
 FEATURE_TOGGLE_NAME='my-feature-toggle-1'
+
 
 # Common HTTP retry function using kubectl exec
 http_retry() {
@@ -14,6 +16,17 @@ http_retry() {
     local post_data="${5:-}"  # Default to empty string if not provided
     local delay=2
     local attempt=1
+
+get_request_ingress() {
+
+    local TOKEN="$1"
+    local ENDPOINT="$2"
+
+    curl -H "Authorization: $TOKEN" "http://${INGRESS_HOST}${ENDPOINT}"
+
+}
+
+get_request_edge() {
 
     # note: whenever the version of wget running in the container is >=1.18, we can use
     # the --retry-status flag and avoid this complicated retry logic
@@ -121,5 +134,16 @@ fi
 echo "Testing that feature toggle '$FEATURE_TOGGLE_NAME' is available through edge service..."
 if ! get_request_edge "$CLIENT_TOKEN" "/api/client/features/$FEATURE_TOGGLE_NAME" 15; then
     echo "Feature toggle '$FEATURE_TOGGLE_NAME' should be available through edge"
+    exit 1
+fi
+
+# Verify the feature toggle is enabled
+if ! get_request_ingress "$CLIENT_TOKEN" "/api/client/features/$FEATURE_TOGGLE_NAME"; then
+    echo "Feature toggle '$FEATURE_TOGGLE_NAME' should be available through ingress"
+    exit 1
+fi
+
+if [ 'true' != "$(get_request_ingress "$CLIENT_TOKEN" "/api/client/features/$FEATURE_TOGGLE_NAME" | jq '.enabled==true')" ]; then
+    echo "Feature toggle '$FEATURE_TOGGLE_NAME' should be enabled"
     exit 1
 fi
